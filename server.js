@@ -1,10 +1,11 @@
 // =============================
-// SocialReport Backend + Mercado Pago
+// SocialReport Backend + Mercado Pago + PIX
 // =============================
 const express = require("express");
 const cors = require("cors");
 const bodyParser = require("body-parser");
 const mercadopago = require("mercadopago");
+const QRCode = require("qrcode");
 
 const app = express();
 
@@ -19,7 +20,7 @@ mercadopago.configure({
 });
 
 // =============================
-// CRIAR PAGAMENTO
+// CRIAR PAGAMENTO MERCADO PAGO
 // =============================
 app.post("/create_payment", async (req, res) => {
   try {
@@ -51,14 +52,12 @@ app.post("/create_payment", async (req, res) => {
 });
 
 // =============================
-// WEBHOOK -> Mercado Pago te avisa do pagamento
+// WEBHOOK -> Mercado Pago
 // =============================
 app.post("/webhook", async (req, res) => {
   try {
     const notification = req.body;
 
-    // Mercado Pago envia notificações desse tipo:
-    // { type: "payment", data: { id: "12345" } }
     if (notification.type === "payment") {
       const payment = await mercadopago.payment.findById(notification.data.id);
       const status = payment.body.status;
@@ -67,10 +66,7 @@ app.post("/webhook", async (req, res) => {
 
       if (status === "approved") {
         console.log("🔥 Pagamento aprovado! Liberar 1 análise ao usuário.");
-
-        // AQUI VOCÊ LIBERA O TESTE
-        // Exemplo (se quiser salvar no banco futuramente)
-        // salvarCredito(payment.body.payer.email);
+        // Aqui você pode liberar acesso ou salvar no banco
       }
     }
 
@@ -79,6 +75,49 @@ app.post("/webhook", async (req, res) => {
   } catch (err) {
     console.log("Erro no webhook:", err);
     return res.sendStatus(500);
+  }
+});
+
+// =============================
+// GERAR PIX DINÂMICO
+// =============================
+app.post("/create_pix", async (req, res) => {
+  try {
+    const { valor } = req.body || {};
+    const PIX = {
+      chave: "14982098075",
+      nome: "Gabriel Freitas",
+      cidade: "Garça-SP",
+      mensagem: "Assinatura SocialReport",
+      valor: valor ? parseFloat(valor) : 9.90
+    };
+
+    const txid = "SR-" + Date.now();
+
+    const payload = `
+000201
+26580014br.gov.bcb.pix
+01${PIX.chave.length.toString().padStart(2, "0")}${PIX.chave}
+52040000
+5303986
+5404${PIX.valor.toFixed(2)}
+5802BR
+5909${PIX.nome}
+6006${PIX.cidade}
+62070506${txid}
+6304`;
+
+    const qrCodeBase64 = await QRCode.toDataURL(payload.trim());
+
+    return res.json({
+      txid,
+      valor: PIX.valor,
+      qrCodeBase64
+    });
+
+  } catch (err) {
+    console.error("Erro ao gerar QR PIX:", err);
+    return res.status(500).json({ error: err.message });
   }
 });
 
