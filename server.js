@@ -1,138 +1,74 @@
 // =============================
-// SocialReport Backend + Mercado Pago + PIX
+// Backend PIX + QRCode funcional
 // =============================
 const express = require("express");
 const cors = require("cors");
 const bodyParser = require("body-parser");
-const mercadopago = require("mercadopago");
 const QRCode = require("qrcode");
 
 const app = express();
-
 app.use(cors());
 app.use(bodyParser.json());
 
 // =============================
-// CREDENCIAIS MERCADO PAGO
+// FUNÇÃO PARA GERAR CRC16
 // =============================
-mercadopago.configure({
-  access_token: "TEST-1067401983516301-111613-1fd620b496a5640c47e200ea2d14de4f-530086420"
-});
-
-// =============================
-// CRIAR PAGAMENTO MERCADO PAGO
-// =============================
-app.post("/create_payment", async (req, res) => {
-  try {
-    const preference = {
-      items: [{
-        title: "Assinatura Social Report",
-        quantity: 1,
-        unit_price: 9.90
-      }],
-      notification_url: "https://SEU-BACKEND.onrender.com/webhook",
-      back_urls: {
-        success: "https://SEU-FRONTEND.vercel.app",
-        pending: "https://SEU-FRONTEND.vercel.app/pay.html",
-        failure: "https://SEU-FRONTEND.vercel.app/pay.html"
-      },
-      auto_return: "approved"
-    };
-
-    const response = await mercadopago.preferences.create(preference);
-
-    return res.json({
-      init_point: response.body.init_point
-    });
-
-  } catch (err) {
-    console.log("Erro ao criar pagamento:", err);
-    return res.status(500).json({ error: err.message });
-  }
-});
-
-// =============================
-// WEBHOOK -> Mercado Pago
-// =============================
-app.post("/webhook", async (req, res) => {
-  try {
-    const notification = req.body;
-
-    if (notification.type === "payment") {
-      const payment = await mercadopago.payment.findById(notification.data.id);
-      const status = payment.body.status;
-
-      console.log("Status do pagamento:", status);
-
-      if (status === "approved") {
-        console.log("🔥 Pagamento aprovado! Liberar 1 análise ao usuário.");
-        // Aqui você pode liberar acesso ou salvar no banco
-      }
+function crc16(payload) {
+  let crc = 0xFFFF;
+  for (let i = 0; i < payload.length; i++) {
+    crc ^= payload.charCodeAt(i) << 8;
+    for (let j = 0; j < 8; j++) {
+      crc = (crc & 0x8000 ? (crc << 1) ^ 0x1021 : crc << 1) & 0xFFFF;
     }
-
-    return res.sendStatus(200);
-
-  } catch (err) {
-    console.log("Erro no webhook:", err);
-    return res.sendStatus(500);
   }
-});
+  return crc.toString(16).toUpperCase().padStart(4, "0");
+}
 
 // =============================
-// GERAR PIX DINÂMICO
+// GERAR PAYLOAD PIX
 // =============================
-app.post("/create_pix", async (req, res) => {
-  try {
-    const { valor } = req.body || {};
-    const PIX = {
-      chave: "14982098075",
-      nome: "Gabriel Freitas",
-      cidade: "Garça-SP",
-      mensagem: "Assinatura SocialReport",
-      valor: valor ? parseFloat(valor) : 9.90
-    };
+function gerarPayloadPIX({ chave, nome, cidade, valor, txid, mensagem }) {
+  const formattedValor = parseFloat(valor).toFixed(2);
 
-    const txid = "SR-" + Date.now();
-
-    const payload = `
+  let payload = `
 000201
 26580014br.gov.bcb.pix
-01${PIX.chave.length.toString().padStart(2, "0")}${PIX.chave}
+01${chave.length}${chave}
 52040000
 5303986
-5404${PIX.valor.toFixed(2)}
+54${formattedValor.length}${formattedValor}
 5802BR
-5909${PIX.nome}
-6006${PIX.cidade}
-62070506${txid}
-6304`;
+59${nome.length}${nome}
+60${cidade.length}${cidade}
+62
+05${txid.length}${txid}
+`
+    .replace(/\s+/g, "");
 
-    const qrCodeBase64 = await QRCode.toDataURL(payload.trim());
+  if (mensagem) {
+    payload += `62${mensagem.length}${mensagem}`;
+  }
 
-    return res.json({
-      txid,
-      valor: PIX.valor,
-      qrCodeBase64
-    });
+  const crc = crc16(payload + "6304");
+  return payload + "6304" + crc;
+}
 
+// =============================
+// ENDPOINT PARA GERAR PIX QR
+// =============================
+app.post("/pix", async (req, res) => {
+  try {
+    const { chave, nome, cidade, valor, txid, mensagem } = req.body;
+
+    const payload = gerarPayloadPIX({ chave, nome, cidade, valor, txid, mensagem });
+
+    const qr = await QRCode.toDataURL(payload);
+
+    return res.json({ payload, qr });
   } catch (err) {
-    console.error("Erro ao gerar QR PIX:", err);
+    console.log("Erro gerar PIX:", err);
     return res.status(500).json({ error: err.message });
   }
-});
-
-// =============================
-// API DEMO do Instagram
-// =============================
-app.get("/api/instagram/:username", (req, res) => {
-  res.json({
-    username: req.params.username,
-    seguidores: 12400,
-    biografia: "Perfil analisado automaticamente.",
-    midias: [],
-    posts: 82,
-    foto: ""
-  });
 });
 
 // =============================
